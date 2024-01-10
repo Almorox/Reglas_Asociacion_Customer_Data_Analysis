@@ -1,0 +1,1287 @@
+---
+title: "Trabajo final de Minería de datos (aprendizaje no supervisado y detección de anomalías): REGLAS DE ASOCIACIÓN"
+subtitle:  "Dataset: Customer Personality Analysis"
+author: Lucía Almorox Antón
+output:
+  pdf_document: 
+    fig_crop: no
+    toc: yes
+    keep_tex: yes
+    toc_depth: 6
+  html_notebook: 
+    toc: yes
+  word_document: default
+  html_document:
+    code_folding: "show"
+    toc: true
+    toc_depth: 7
+    toc_float: true
+    df_print: paged
+---
+
+# 0. Configuración del documento y carga de paquetes.
+```{r carga de paquetes, results='hide', warning=FALSE, message=FALSE}
+rm(list=ls())
+set.seed(333)
+
+
+list.of.packages <- c("formatR","tidyverse","ggplot2","Amelia","readr","lubridate",
+                      "arules", "arulesViz","dlookr")
+
+new.packages <- list.of.packages[!(list.of.packages %in% 
+                                 installed.packages()[,"Package"])]
+
+if(length(new.packages)) install.packages(new.packages)
+lapply(list.of.packages, library, character.only = TRUE)
+
+knitr::opts_chunk$set(echo = TRUE, tidy=TRUE,
+    tidy.opts=list(width.cutoff=40), fig.align = 'center',cache=TRUE)
+ggplot2::theme_set(theme_bw())
+```
+
+# 1. Descripción del dataset.
+
+El dataset sobre el que se pretende extraer conocimiento mediante reglas de asociación se llama "Customer Personality Analysis". Se encuentra en Kaggle (https://www.kaggle.com/datasets/imakash3011/customer-personality-analysis?datasetId=1546318) y contiene un análisis detallado de los clientes de una empresa, incluyendo tanto características personales del cliente (fecha de nacimiento, estado civil, etc.) como información sobre su interacción con la empresa (compras, quejas, etc.). 
+
+El análisis de la personalidad del cliente ayuda a una empresa a comprender mejor a sus clientes y a identificar distintos tipos de ellos, facilitando la  modificación de productos de acuerdo con las necesidades, comportamientos e inquietudes específicos de cada tipo. 
+
+Mediante la extracción de reglas de asociación de esta base de datos se pretende identificar relaciones no triviales entre las características de los clientes y las preferencias de compra o su forma de interacción con la empresa. 
+
+## 1.1. Variables del dataset. 
+
+El dataset se compone de 2240 clientes (observaciones/filas) sobre los que se detallan 29 características (columnas).
+
+```{r leer}
+Clientes <- read.table("marketing_campaign.csv",sep = "\t", header = T)
+head(Clientes)
+cat("Dimensión del dataset:",dim(Clientes),"\n")
+cat("Nombres de las variables del dataset:\n",colnames(Clientes), sep="  ")
+Clientes_o <- Clientes
+```
+
+En Kaggle se describe el significado de cada variable de la siguiente forma:
+
+*Personas*
+
+**ID**: Identificador único del cliente
+
+**Year_Birth**: Año de nacimiento del cliente
+
+**Education**: Nivel de educación del cliente
+
+**Marital_Status**: Estado civil del cliente
+
+**Income**: Ingreso familiar anual del cliente
+
+**Kidhome**: Número de niños en el hogar del cliente
+
+**Teenhome**: Número de adolescentes en el hogar del cliente
+
+**Dt_Customer**: Fecha de alta del cliente en la empresa
+
+**Recency**: Número de días desde la última compra del cliente
+
+**Complain**: 1 si el cliente se ha quejado en los dos últimos años, 0 si no
+
+*Productos*
+
+**MntWines**: Cantidad gastada en vino en los dos últimos años
+
+**MntFruits**: Cantidad gastada en fruta en los dos últimos años
+
+**MntMeatProducts**: Cantidad gastada en carne en los dos últimos años
+
+**MntFishProducts**: Cantidad gastada en pescado en los dos últimos años
+
+**MntSweetProducts**: Cantidad gastada en dulces en los dos últimos años
+
+**MntGoldProds**: Cantidad gastada en oro en los dos últimos años
+
+*Promoción*
+
+**NumDealsPurchases**: Número de compras realizadas con descuento.
+
+**AcceptedCmp1**: 1 si el cliente aceptó la oferta en la primera campaña, 0 si no
+
+**AcceptedCmp2**: 1 si el cliente aceptó la oferta en la segunda campaña, 0 si no
+
+**AcceptedCmp3**: 1 si el cliente aceptó la oferta en la tercera campaña, 0 si no
+
+**AcceptedCmp4**: 1 si el cliente aceptó la oferta en la cuarta campaña, 0 si no
+
+**AcceptedCmp5**: 1 si el cliente aceptó la oferta en la quinta campaña, 0 si no
+
+**Response**: 1 si el cliente aceptó la oferta en la última campaña, 0 si no
+
+*Lugar*
+
+**NumWebPurchases**: Número de compras realizadas a través de la página web de la empresa
+
+**NumStorePurchases**: Número de compras realizadas directamente en tiendas
+
+**NumCatalogPurchases**: Número de compras realizadas utilizando el catálogo *(entiendo que estas compras se realizan igualmente en tienda o través de la página web)*.
+
+**NumWebVisitsMonth**: Número de visitas a la página web de la empresa en el último mes
+
+```{r descripcion}
+str(Clientes)
+cat("\n")
+table(diagnose(Clientes)$types)
+cat("\n")
+summary(Clientes)
+```
+
+# 2. Modificaciones necesarias del dataset.
+
+## 2.1. Eliminaciíon de variables que tienen el mismo valor para todas las observaciones. 
+
+Todos los clientes tienen Z_CostContact = 3 y Z_Revenue = 11, por lo que se procede a la eliminación de dichas variables (de hecho, estas variables no aparecen en la descripción del dataset, por lo que no sabemos qué son).
+
+```{r modif 1}
+Clientes[["Z_CostContact"]] = NULL
+Clientes[["Z_Revenue"]] = NULL
+```
+
+## 2.2. Eliminación de variables con valores únicos.
+
+Dado que los valores de la variable ID son específicos y diferentes para cada cliente, se procede a la eliminación de dicha variable.
+
+Lo mismo ocurre con la variable Dt_Customer (fecha en la que se dio de alta el cliente), sin embargo, en este caso se considera interesante conservar el año de la fecha, en lugar de eliminar la variable. 
+
+```{r modif 2}
+Clientes[["ID"]] = NULL
+
+Clientes = separate(Clientes, Dt_Customer, c("Dt_Day", "Dt_Month", "Dt_Year"), sep = "-")
+Clientes[["Dt_Day"]] = NULL
+Clientes[["Dt_Month"]] = NULL
+head(Clientes)
+```
+## 2.3. Discretización de variables numéricas.
+
+A continuación, se utilizan histogramas para conocer la distribución de las variables numéricas y poder así estimar cortes razonables para la discretización. 
+
+```{r histograms, fig.width=6, fig.height=5, out.width='600px'}
+#library(rlang)
+
+Clientes[["Dt_Year"]] <- as.numeric(Clientes[["Dt_Year"]])
+
+plot_histogram <- function(data){
+  data %>% dplyr::select_if(is.numeric) %>%
+  pivot_longer(everything(),names_to="cols",values_to="value")%>%
+  ggplot(aes(x = value)) +
+  geom_histogram(bins=20,fill="#69b3a2", color="#e9ecef") +
+  facet_wrap(~ cols, ncol=3, scales = 'free', ) + 
+  labs(title="Distribución de las variables", x="valor", 
+       y="Nº de observaciones")
+}
+
+plot_histogram(Clientes[,1:11])
+plot_histogram(Clientes[,12:20])
+plot_histogram(Clientes[,21:26])
+
+
+```
+
+Las **variables que indican la cantidad de gasto en ciertos tipos de productos** (las que empiezan por "Mnt") se discretizan en 3 niveles: Low, Medium y High, en base a los cuantiles 0.333 y 0.666.
+
+
+```{r cuts}
+mnt_names <- Clientes %>% dplyr::select(starts_with("Mnt")) %>% colnames()
+
+for (mnt in mnt_names){
+  Clientes[[mnt]] = ordered(cut(Clientes[[mnt]], c(-Inf,quantile(Clientes[[
+    mnt]],  probs = 0.333),quantile(Clientes[[
+    mnt]],  probs = 0.666),Inf)), labels = c("Low", "Medium", "High"))
+}
+
+```
+
+
+```{r cuts viz, fig.width=6, fig.height=4.5, out.width='600px'}
+
+Clientes %>% dplyr::select(starts_with("Mnt")) %>%
+  pivot_longer(everything(),names_to="cols",values_to="value")%>%
+  ggplot(aes(x = value)) +
+  geom_bar(fill="#69b3a2", width=0.4)+
+  geom_text(stat='count', aes(label=..count..), vjust=1, cex=3)+
+  facet_wrap(~ cols, ncol=3, scales = 'free', ) + 
+  labs(title="Distribución de las variables", x="valor", y="Nº de observaciones")
+```
+Se procede de la misma manera con **las variables que empiezan por "Num"**, que hacen referencia al número de compras de distintos tipos de productos:
+
+```{r cuts 2}
+num_names <- Clientes %>% dplyr::select(starts_with("Num")) %>% colnames()
+
+for (num in num_names){
+  labels_num = c(paste(0,quantile(Clientes[[
+    num]],  probs = 0.333),sep="-"),paste(quantile(Clientes[[
+    num]],  probs = 0.333)+1,quantile(Clientes[[
+    num]],  probs = 0.666),sep="-"),paste(quantile(Clientes[[
+    num]],  probs = 0.666)+1,max(Clientes[[
+    num]]),sep="-"))
+  labels_num
+  Clientes[[num]] = ordered(cut(Clientes[[num]], c(-Inf,quantile(Clientes[[
+    num]],  probs = 0.333),quantile(Clientes[[
+    num]],  probs = 0.666),Inf), labels=labels_num,right=T))
+}
+
+
+```
+
+
+```{r cuts viz 2, fig.width=6, fig.height=4.5, out.width='600px'}
+for (num in num_names){
+  Clientes[[num]] <- as.character(Clientes[[num]])
+}
+
+Clientes %>% dplyr::select(starts_with("Num")) %>% 
+  pivot_longer(everything(),names_to="cols",values_to="value")%>%
+  ggplot(aes(x = value)) +
+  geom_bar(fill="#69b3a2", width=0.4)+
+  geom_text(stat='count', aes(label=..count..), vjust=1, cex=3)+
+  facet_wrap(~ cols, ncol=3, scales = 'free', ) + 
+  labs(title="Distribución de las variables", x="valor", 
+       y="Nº de observaciones")
+```
+**Las variables Income y Recency** se discretizan en 4 intervalos (se utilizan los cuartiles en ambos casos).
+
+```{r income recency}
+# Income
+breaks_income <- unname(quantile(Clientes[["Income"]],na.rm=T))
+labels_income <- c("Very_low","Low","Medium","High")
+Clientes[["Income"]] = ordered(cut(Clientes[["Income"]], breaks_income, 
+                                   labels=labels_income,right=T))
+
+# Recency
+breaks_rec <- unname(quantile(Clientes[["Recency"]],na.rm=T))
+labels_rec <- c("Few","Some","Medium","High")
+Clientes[["Recency"]] = ordered(cut(Clientes[["Recency"]], 
+                                    breaks_rec, labels=labels_rec,right=T))
+
+```
+
+
+```{r cuts viz 3, fig.width=4, fig.height=3, out.width='500px'}
+last_2 <- c("Income","Recency")
+for (i in last_2){
+  Clientes[[i]] <- as.character(Clientes[[i]])
+}
+Clientes %>% dplyr::select(one_of(last_2)) %>% 
+  pivot_longer(everything(),names_to="cols",values_to="value")%>%
+  ggplot(aes(x = value)) +
+  geom_bar(fill="#69b3a2", width=0.4)+
+  geom_text(stat='count', aes(label=..count..), vjust=1, cex=3)+
+  theme(axis.text.x = element_text(angle = 90))+
+  facet_wrap(~ cols, ncol=3, scales = 'free', ) + 
+  labs(title="Distribución de las variables", x="valor", y="Nº de observaciones")
+  
+```
+En ambas variables aparecen missing values (NA). En principio, no considero necesario realizar imputación (Income=NA, por ejemplo, será un item muy poco frecuente con el que no creo que se formen reglas de asociación).
+
+A continuación se observa si alguna variable más contiene missing values:
+
+```{r Missingvalues, fig.width=7, fig.height=4, out.width='600px'}
+missmap(Clientes, main="Missing Map")  # Paquete Amelia
+```
+
+En el resto de variables no hay missing values.
+
+
+**El año de nacimiento** tiene como mínimo 1893 y como máximo 1996, por lo que la variable comprende un rango de 103 años (aunque parece poco realista que una persona nacida en 1893 siga viva en el momento en el que una persona del 1996 tiene al menos 18 años). A continuación se discretiza dicho rango en los siguientes intervalos: 1893-1955, 1956-1975, 1976-1990, 1991-1996; con etiquetas: "Senior", "Mature","Adult","Young".
+
+```{r birth, fig.width=2, fig.height=2, out.width='200px'}
+Clientes[["Year_Birth"]] = ordered(cut(Clientes[["Year_Birth"]],
+c(-Inf,1955,1975,1990,Inf), labels = c("Senior", "Mature","Adult","Young"),
+right=T))
+
+```
+```{r birth viz}
+Clientes %>% ggplot(aes(x = Year_Birth)) +
+  geom_bar(fill="#69b3a2", width=0.4)+
+  geom_text(stat='count', aes(label=..count..), vjust=1, cex=3) + 
+  labs(title="Distribución de la variable Year_Birth", x="Intervalo", 
+       y="Nº de clientes")
+```
+
+## 2.4. Variables binarias a factores.
+
+```{r facts }
+
+Clientes$AcceptedCmp1 <- fct_collapse(
+  as.factor(Clientes$AcceptedCmp1),
+  No = "0",
+  Yes = "1")
+
+Clientes$AcceptedCmp2 <- fct_collapse(
+  as.factor(Clientes$AcceptedCmp2),
+  No = "0",
+  Yes = "1")
+
+Clientes$AcceptedCmp3 <- fct_collapse(
+  as.factor(Clientes$AcceptedCmp3),
+  No = "0",
+  Yes = "1")
+
+
+Clientes$AcceptedCmp4 <- fct_collapse(
+  as.factor(Clientes$AcceptedCmp4),
+  No = "0",
+  Yes = "1")
+
+
+Clientes$AcceptedCmp5 <- fct_collapse(
+  as.factor(Clientes$AcceptedCmp5),
+  No = "0",
+  Yes = "1")
+
+Clientes$Complain <- fct_collapse(
+  as.factor(Clientes$Complain),
+  No = "0",
+  Yes = "1")
+
+Clientes$Response <- fct_collapse(
+  as.factor(Clientes$Response),
+  No = "0",
+  Yes = "1")
+
+
+```
+
+## 2.5. Variables Kidhome, Teenhome y Dt_Year a factores.
+
+Dado que las variables KidHome y Teenhome solo tienen 3 valores cada una (0,1 o 2), se convierten a caracteres (no se discretizan). Se procede de la misma manera con la variable Dt_Year (valores: 2012, 2013, 2014).
+
+```{r home}
+Clientes$Kidhome <- as.factor(Clientes$Kidhome)
+Clientes$Teenhome <- as.factor(Clientes$Teenhome)
+Clientes$Dt_Year <- as.factor(Clientes$Dt_Year)
+```
+
+
+## 2.6. Visualización y modificación de variables categóricas.
+
+Se representa la distribución de cada una: 
+
+```{r viz cats, fig.width=5, fig.height=4, out.width='500px'}
+categ <- c("Education","Marital_Status")
+Clientes %>% dplyr::select(one_of(categ)) %>% 
+  pivot_longer(everything(),names_to="cols",values_to="value")%>%
+  ggplot(aes(x = value)) +
+  geom_bar(fill="#69b3a2", width=0.4)+
+  geom_text(stat='count', aes(label=..count..), vjust=0, cex=3)+
+  facet_wrap(~ cols, ncol=2, scales = 'free', ) + 
+  labs(title="Distribución de las variables", x="valor", y="Nº de observaciones")+
+  theme(axis.text.x = element_text(angle = 90))
+```
+La variable Education, por ahora, parece razonable dejarla con las cinco categorías, pues quizás haya diferencias en cómo un graduado o un doctorando interacciona con la empresa. Sin embargo, sí parece necesario agrupar algunos valores de la variable Marital_Status. En concreto en este caso se crean dos categorías únicamente: "Single" y "Relationship".
+
+```{r a, fig.width=4, fig.height=4, out.width='500px'}
+Clientes$Marital_Status[Clientes$Marital_Status == "Absurd" | 
+  Clientes$Marital_Status == "Alone"| Clientes$Marital_Status == "Divorced" | 
+  Clientes$Marital_Status == "Widow" | Clientes$Marital_Status == "YOLO"] <- 
+  "Single"
+
+Clientes$Marital_Status[Clientes$Marital_Status == "Married" | 
+  Clientes$Marital_Status == "Together"] <- "Relationship"
+
+Clientes %>% dplyr::select(one_of("Marital_Status")) %>% 
+  pivot_longer(everything(),names_to="cols",values_to="value")%>%
+  ggplot(aes(x = value)) +
+  geom_bar(fill="#69b3a2", width=0.4)+
+  geom_text(stat='count', aes(label=..count..), vjust=0, cex=3)+
+  facet_wrap(~ cols, ncol=2, scales = 'free', ) + 
+  labs(title="Distribución de las variables", x="valor", 
+       y="Nº de observaciones")+
+  theme(axis.text.x = element_text(angle = 90))
+
+```
+
+
+
+# 3. Apriori sobre el dataset con las modificaciones estrictamente necesarias.
+
+## 3.1. Obtención de información de la base de datos. 
+
+Se convierte el dataframe a un conjunto de transacciones (base de datos).
+
+```{r b}
+# Para cambiar las variables que son cadenas de caracteres a factores:
+Clientes <- as.data.frame(unclass(Clientes),stringsAsFactors=TRUE)
+
+ClientesBD <- as(Clientes, "transactions")
+ClientesBD
+```
+```{r c}
+summary(ClientesBD)
+```
+Se observan los items más frecuentes (en este caso, con una frecuencia igual o superior a 0.35 en las transacciones de la base de datos).
+
+```{r d, fig.width=6, fig.height=5, out.width='600px'}
+#itemFrequencyPlot(ClientesBD, support = 0.3, cex.names=0.8)
+itemFrequencyPlot(ClientesBD, support = 0.35, cex.names=0.8)
+```
+La información de esta gráfica concuerda con la que se obtenía a través de los gráficos de barras. Para cada campaña, la gran mayoría de clientes rechaza la oferta, al igual que la gran mayoría de clientes no se ha quejado nunca a la empresa. Estos items tienen una frecuencia superior a 0.8. Los siguientes items más frecuentes son Marital_Satuts=Relationship y KidHome=0.
+
+A continuación, se define un objeto que recoge los items frecuentes para un soporte de 0.35. Se muestran los 10 con mayor soporte.
+
+```{r e}
+iClientes <- apriori(ClientesBD, parameter = list(support = 0.35, 
+                                                  target="frequent"))
+
+# Los ordenamos por el valor del soporte
+iClientes <- sort(iClientes, by="support") 
+inspect(head(iClientes, n=10))
+```
+
+Tanto el gráfico como esta tabla indican que la última campaña ha sido la más exitosa, pues el item "Response=No" tiene un soporte menor que el resto de items relativos a otras campañas.
+
+Se representa el número de itemsets frecuentes para cada tamaño de itemset.
+
+```{r f, fig.width=4, fig.height=4, out.width='500px'}
+
+as.data.frame(size(iClientes)) %>% ggplot(aes(x=size(iClientes)))+
+  geom_bar(fill="#69b3a2", width=0.4)+
+  geom_text(stat='count', aes(label=..count..), vjust=1, cex=3)+
+  labs(x="Itemset size",y="Number of frequent itemsets")
+```  
+Se observan algunos de los itemsets frecuentes de tamaño 8 (el máximo):
+
+```{r g}
+ 
+inspect(head(iClientes[size(iClientes)==8],3))
+
+```
+
+En esta base de datos hay varios items muy frecuentes, por lo que al combinarlos se crean itemsets que, a pesar de su gran tamaño, siguen siendo frecuentes (con un soporte superior al soporte mínimo). Esto no es algo que interese a la hora de extraer reglas de asociación: se crearán reglas inútiles, con un alto soporte en el consecuente: si A->B es una regla donde B tiene un soporte extremadamente alto, "observar A implica una alta probabilidad de observar B" no porque haya una relación entre ambos items, sino porque B aparece en casi todas las transacciones (es decir, cualquier cosa implica una alta probabilidad de encontrar a B).
+
+Habrá que filtrar las reglas obtenidas para eliminar este tipo de reglas. 
+
+A continuación, se extraen los itemset maximales (aquellos a los que si se les añade un solo item más, dejan de ser frecuentes -para un soporte de 0.35 en este caso-). Se muestran algunos, los que tienen mayor soporte:
+
+```{r h}
+imaxClientes <- iClientes[is.maximal(iClientes)]
+length(imaxClientes)
+inspect(head(sort(imaxClientes, by="support"),5))
+
+```
+
+Los que tienen menor soporte:
+
+```{r i}
+
+inspect(head(sort(imaxClientes, by="support",decreasing=F),5))
+
+```
+A continuación, se extraen los itemsets cerrados (si se les añade un solo item más, su soporte baja -no necesariamente por debajo del soporte mínimo-). Se muestran algunos:
+
+```{r o}
+
+icloClientes <- iClientes[is.closed(iClientes)]
+#length(icloClientes)
+inspect(head(sort(icloClientes, by="support")))
+
+
+```
+Por su definición, dentro de los cerrados se incluyen todos los maximales. Podemos ver algunos de ellos a continuación (los que se muestran tienen el soporte mínimo, por lo que si baja ese soporte, obviamente dejan de ser itemsets frecuentes):
+
+```{r p}
+
+inspect(head(sort(icloClientes, by="support", decreasing=F)))
+
+```
+
+Se representa el número de itemsets de cada tipo:
+
+```{r q, fig.width=4, fig.height=4, out.width='500px'}
+
+# barplot( c(frequent=length(iClientes), closed=length(icloClientes),
+# maximal=length(imaxClientes)), ylab="count", xlab="itemsets")
+
+df <- data.frame(trt = c("Frequent", "Closed", "Maximal"), outcome =
+            c(length(iClientes), length(icloClientes), length(imaxClientes)))
+
+ggplot(df, aes(trt, outcome)) +
+  geom_col(fill="#69b3a2", width=0.4)+
+  geom_text(stat = "identity", aes(label=`outcome`), vjust=1, cex=3)+
+  labs(x="Itemset type",y="Count")
+  
+
+
+```
+Se puede observar la gran diferencia entre el número de cerrados y de maximales. Con cualquiera de los dos grupos se pueden obtener todos los itemsets frecuentes, aunque desconoceríamos su soporte si utilizáramos los maximales (habría que volver a calcularlo).
+
+## 3.2. Extracción de reglas (apriori).
+
+Se utiliza el método apriori del paquete *arules* para obtener reglas con un soporte mínimo de 0.1, una confianza mínima de 0.8 y una longitud mínima de 2.
+
+```{r r}
+
+rules <- apriori(ClientesBD, parameter = list(support = 0.1, 
+                                              confidence = 0.8, minlen = 2))
+
+```
+Se han escrito 2551741 reglas, que, obviamente han de ser filtradas. 
+
+```{r s}
+
+summary(rules)
+```
+
+
+
+```{r t}
+
+inspect(head(rules))
+```
+
+
+Se observan aquí ejemplos de reglas inútiles (con alto soporte en el consecuente).
+
+```{r u}
+
+rulesSorted = sort(rules, by = "confidence")
+inspect(head(rulesSorted,10))
+```
+
+Es necesario filtrar reglas mediante una medida de calidad que penalice el tener un gran soporte en el consecuente, por ejemplo, lift (valores de 1 indican independencia entre antecedente y consecuente, buscamos valores superiores a 1).
+
+```{r v}
+# rules_lift <- subset(rules, subset = lift > 1.2)
+rules_lift <- subset(rules, subset = lift > 1.4)
+inspect(head(rules_lift,20))
+```
+
+Ahora sí se ven reglas más interesantes. Los clientes con mayor ingreso tienden a tener cero niños en casa. Por ello también vemos que los clientes que invierten mayores cantidades en la empresa y que efectúan un mayor número de compras en esta, tienden a tener 0 niños en casa. 
+
+Se obtienen reglas que tengan en el consecuente el item Kidhome=0.
+
+```{r W}
+
+
+#%in% -> contener alguno de los items que se especifiquen
+
+`%!in%` = Negate(`%in%`) # que no tengan ninguno de los items que se 
+                         #especifiquen
+
+# %oin% -> que solo contenga los items que se especifiquen
+
+# %ain% -> que contenga todos los items que se especifiquen
+
+`%!ain%` = Negate(`%ain%`) # que no contenga todos los items que se especifiquen.
+
+
+rules_lift2 <- subset(rules, subset = lift > 1.2 & lhs %ain% c("NumCatalogPurchases=4-28","NumStorePurchases=8-13") & 
+rhs %in% "Kidhome=0" & size(rules)>4 & 
+lhs %!in% c("AcceptedCmp1=No","AcceptedCmp2=No",
+"AcceptedCmp3=No","AcceptedCmp4=No",
+"AcceptedCmp5=No","Complain=No"))
+
+inspect(head(rules_lift2,5))
+```
+
+Se guarda la primera de estas reglas como interesante:
+
+```{r x}
+R_INTERESANTES <- as(rules_lift2[1],"data.frame")
+R_INTERESANTES
+
+```
+
+Para resolver el problema de las reglas con un alto soporte en el consecuente, también podemos, en lugar de filtrar por lift, filtrar por reglas con alta confianza y que no tengan en el consecuente los items que sabemos que tienen un gran soporte. 
+
+
+```{r y}
+
+rules_mod <- subset(rules, subset = rhs %!in% 
+c("AcceptedCmp1=No","AcceptedCmp2=No","AcceptedCmp3=No",
+  "AcceptedCmp4=No", "AcceptedCmp5=No","Complain=No",
+  "Response=No") & confidence >0.8 )
+inspect(head(rules_mod,20))
+```
+Regla número 6: El 81% de los clientes con alto ingreso han consultado poco (o nada) la web en el último mes. Se guarda esta regla como interesante.
+
+```{r z}
+R_INTERESANTES <- rbind(R_INTERESANTES,as(rules_mod[6],"data.frame"))
+R_INTERESANTES
+
+```
+
+No encontramos reglas que tengan en el consecuente alguno de los items que definen tener hijos o adolescentes (no es sorprendente, pues cada uno de estos items tiene un bajo soporte, quizás habría que agrupar ambas variables).
+
+```{r aa}
+
+rules_mod <- subset(rules, subset =  rhs %in% c("Teenhome=1","Teenhome=2", 
+                              "Kidhome=1", "Kidhome=2") & length(rhs)==1 )
+inspect(head(rules_mod,20))
+```
+
+Se filtran reglas que tengan en el antecedente el atributo que indica alto número de visitas a la web en el último mes:
+
+```{r bb}
+
+rules_mod <- subset(rules, subset = lhs %in% "NumWebVisitsMonth=8-20" &
+                      lhs %!in% "Kidhome=1" & lift >1.2 )
+inspect(head(rules_mod,5))
+```
+
+Estas reglas definen un grupo de clientes que visitaron mucho la web en el último mes y que, en los dos últimos años, compraron muy poco en tienda y realizaron muy pocas compras utilizando el catálogo.
+
+Guardamos, por ejemplo, la primera regla como interesante (casi el 90% de los clientes que visitaron mucho la web en el último mes y que compraron poco -o nada- en tienda en los dos últimos años, realizaron pocas -o ninguna- compra utilizando el catálogo en los dos últimos años). 
+
+```{r cc}
+R_INTERESANTES <- rbind(R_INTERESANTES,as(rules_mod[1],"data.frame"))
+R_INTERESANTES
+
+```
+
+Se buscan reglas que tengan en el consecuente el item "NumWebVisitsMonth=0-4".
+
+```{r dd}
+
+rules_mod <- subset(rules, subset = rhs %oin% "NumWebVisitsMonth=0-4" & 
+                      lift >1.2 & size(rules)>3)
+inspect(head(rules_mod,13))
+```
+Grupo de reglas 3-8: los clientes que tienen un alto ingreso, que realizan muchas compras utilizando el catálogo y que invierten mucho dinero en **cualquiera de los 6 tipos de productos** de la empresa tienden a visitar nada o poco la web -al menos en el último mes- (puede que, en general, los clientes activos utilicen el catálogo y no la web o que los que hacen esto sean solo un subgrupo dentro de los clientes activos). 
+
+Guardamos, por ejemplo, la regla 3 como interesante (aunque el grupo de reglas en sí es interesante, ya que todos los tipos de productos se ven representados).
+
+```{r ee}
+R_INTERESANTES <- rbind(R_INTERESANTES,as(rules_mod[3],"data.frame"))
+R_INTERESANTES
+
+```
+
+Para seguir estudiando este grupo de gente, se buscan reglas que relacionen grandes inversiones en distintos tipos de productos y que además tengan en el antecedente el atributo de pocas visitas a la web.
+
+```{r ff}
+high <- c("MntFruits=High","MntGoldProds=High","MntSweetProducts=High",
+          "MntFishProducts=High","MntMeatProducts=High","MntWines=High")
+rules_mod <- subset(rules, subset = lhs %in% "NumWebVisitsMonth=0-4" & 
+                      lhs %in% high & rhs %in% high & lift >1.2)
+inspect(head(rules_mod,20))
+```
+
+
+Con todas estas reglas, queda claro que los clientes que visitaron muy poco o nada la página web en el último mes y que invierten mucho en un tipo de producto de la empresa, tienden a invertir mucho en otros tipos de productos de la tienda también. Otro detalle a destacar es que ninguna de estas reglas tiene el item MntGoldProds=High ni MntWiness=High en el consecuente, por lo que no se podría esperar con seguridad que un cliente que invierta mucho en pescado, fruta, dulces o carne invierta también mucho en oro o vino. Sin embargo, de un cliente que compre mucho oro -y que haya visitado poco la web en el último mes- sí se puede esperar una alta inversión en pescado.
+
+Se guarda, por ejemplo, la regla número 8 como interesante (aunque es el conjunto de reglas en sí el que nos indica que estos clientes no se centran en un único producto).
+
+```{r gg}
+R_INTERESANTES <- rbind(R_INTERESANTES,as(rules_mod[8],"data.frame"))
+R_INTERESANTES
+
+```
+
+
+Se podría pensar en la existencia de dos tipos de clientes activos: los que compran en la web y los que compran en tienda física. Estas últimas reglas podrían estar indicando que los clientes activos que no visitan la página web, no compran a través de la página web, sino en tienda física (y utilizando el catálogo, por lo visto). Esto les haría comprar productos más variados que el resto de clientes: si el cliente quiere comprar pescado, es fácil que no pase por la sección de frutas de la página web, mientras que, en la tienda física, puede que para llegar a la sección objetivo pase antes por muchas otras y acabe comprando cosas que no tenía pensado al entrar.
+
+Sin embargo, se puede comprobar que no se han escrito reglas que relacionen los items "NumWebVisitsMonth=0-4" y "NumWebPurchases=0-2":
+
+```{r hh}
+rel_web <- c("NumWebVisitsMonth=0-4","NumWebPurchases=0-2")
+rules_mod <- subset(rules, subset = lhs %in% rel_web 
+                    & rhs %in% rel_web & lift >1.2)
+inspect(head(rules_mod,13))
+```
+
+
+Además, al filtrar reglas que tengan en el antecendente un bajo número de **compras** en la web, no se obtienen las reglas que se obtenían cuando el filtro era bajo número de **visitas** a la web.
+
+
+```{r ii}
+
+rules_mod <- subset(rules, subset = (rhs %in% high | lhs %in% high) & 
+                      lhs %in% "NumWebPurchases=0-2")
+inspect(head(rules_mod,20))
+
+```
+No se obtiene ninguna regla (con los filtros aplicados al principio). No se puede asegurar que los que visitaron poco la web en el último mes, compren poco en la web.
+
+Además, la primera regla guardada como interesante es {Income=High} => {NumWebVisitsMonth=0-4}. Por tanto, parece que los clientes activos, aquellos con alto ingreso, tienen alta probabilidad de haber visitado poco la web el último mes, de usar mucho el catálogo y de comprar distintos tipos de productos (por tanto, no se trataría de un subgrupo dentro de los clientes activos).
+
+*Comprobaciones adicionales:*
+
+Al filtrar reglas que tengan en el antecendente un mayor número de visitas a la web (clientes interesados aunque no especialmente activos en la empresa), no se obtienen reglas que relacionen estos items con inversiones altas en ningún producto. 
+
+```{r oo}
+
+rules_mod <- subset(rules, subset = lhs %in% 
+c("NumWebVisitsMonth=8-20","NumWebVisitsMonth=5-7") &
+(lhs %in% high | rhs %in% high) & lift >1.1)
+inspect(head(rules_mod,20))
+```
+
+Tampoco se obtienen cuando el número de compras en tienda o catálogo es bajo (al igual que no se obtenían cuando el número de compras en web era bajo):
+
+```{r pp}
+
+rules_mod <- subset(rules, subset = lhs %in% 
+c("NumStorePurchases=0-4","NumStorePurchases=5-7",
+"NumCatalogPurchases=0-1","NumCatalogPurchases=2-3") & 
+lhs %in%("MntFruits=High") & lift >1.1)
+
+inspect(head(rules_mod,20))
+```
+
+
+Tampoco se encuentran reglas que relacionen un número alto de visitas a la web con un gasto alto en ninguno de los productos ni con tener un ingreso alto:
+
+
+```{r qq}
+
+rules_mod <- subset(rules, subset = (lhs %in% "NumWebVisitsMonth=8-20" | 
+          rhs %in% "NumWebVisitsMonth=8-20" ) & 
+          (lhs %in% c(high,"Income=High") | 
+            rhs %in% c(high,"Income=High" )) &
+           lift >1.1 )
+inspect(head(rules_mod,20))
+```
+
+*Cabe destacar que el hecho de que no aparezcan reglas al usar estos filtros está condicionado al valor de confianza mínima de 0.8 que se utilizó como condición para escribir las reglas que se están ahora inspeccionando*.
+
+Además, para confirmar que haber visitado poco la web en el último mes es una tendencia general de los clientes activos (y no de un subgrupo) se realiza el siguiente análisis sobre el dataset, que indica que los clientes activos (695 clientes clasificados como tal -de froma arbitraria-  por tener una alta inversión en al menos 4 productos de la empresa) y con alto número de visitas a la web son solo 37, mientras que los clientes activos con bajo número de visitas a la web son 485: 
+
+```{r rr}
+
+active_and_webvisits <- subset(Clientes,NumWebVisitsMonth=="8-20" & 
+(as.numeric(MntFruits=="High") + as.numeric(MntGoldProds=="High") + 
+as.numeric(MntSweetProducts=="High") + 
+  as.numeric(MntFishProducts=="High") + 
+  as.numeric(MntMeatProducts=="High") + 
+  as.numeric(MntWines=="High"))>=4)
+
+active_and_webvisits
+
+N_act_web_visits <- nrow(active_and_webvisits)
+
+```
+```{r ss}
+tot_active <- subset(Clientes, (as.numeric(MntFruits=="High") +
+as.numeric(MntGoldProds=="High") + as.numeric(MntSweetProducts=="High") + as.numeric(MntFishProducts=="High") + as.numeric(MntMeatProducts=="High") + as.numeric(MntWines=="High"))>=4) %>% nrow()
+
+
+active_few_web_visits <- subset(Clientes,NumWebVisitsMonth=="0-4" & 
+(as.numeric(MntFruits=="High") + as.numeric(MntGoldProds=="High") + 
+as.numeric(MntSweetProducts=="High") + as.numeric(MntFishProducts=="High") + as.numeric(MntMeatProducts=="High") + as.numeric(MntWines=="High"))>=4) %>% 
+nrow()
+
+cat("clientes activos (inversión alta en al menos 4 productos:",tot_active,"\n")
+cat("% de clientes activos con muchas visitas a la web en 
+    el último mes (8-20): ",N_act_web_visits*100/tot_active,"%\n")
+cat("% de clientes activos con pocas visitas 
+    a la web en el último mes (0-4): ", 
+    active_few_web_visits*100/tot_active,"%")
+
+```
+
+
+
+A continuación, se eliminan las reglas redundantes y se representan en función de lift, confianza y soporte:
+
+```{r tt, fig.width=6, fig.height=4, out.width='600px'}
+rulesSorted = sort(rules, by = "confidence")
+redundant <- is.redundant(x = rulesSorted, measure = "confidence")
+rulesPruned <- rulesSorted[!redundant] 
+plot(rulesPruned)
+```
+
+Igual que antes, obtenemos reglas obvias si no filtramos por itemsets.
+
+```{r uu}
+
+rules_mod <- subset(rulesPruned, subset = lift >2 & confidence<0.85 &
+                      support > 0.2)
+inspect(head(rules_mod,10))
+```
+
+
+
+# 4. Apriori sobre el dataset con las modificaciones adicionales.
+
+## 4.1. Modificaciones del dataset.
+
+Al realizar la extracción de reglas sobre el dataset anterior se observa fácilmente que algunas variables pueden ser optimizadas para obtener reglas más interesantes.
+
+A continuación se realizan algunos cambios (que aun así, no tienen por qué funcionar).
+
+* 1. Se juntan las variables Kidhome y Teenhome en una sola (que representa la suma de las dos), Kids. (Se eliminan las variables originales).
+
+* 2. Se crea una nueva variable, TotalMnt, que representa la suma de todas las cantidades invertidas en cada uno de los productos de la empresa (no se eliminan las variables originales).
+
+* 3. Se crea una variable, TotalAcceptedCmp, con el número total de campañas aceptadas. (Se eliminan las variables originales).
+
+* 4. Se crea una variable, NumTotalPurchases, con el número total de compras realizadas *(a través de la tienda o a través de la web, no se incluyen las compras utilizando el catálogo o utilizando descuentos, porque entiendo que son compatibles con comprar en tienda o en web)*. (Se eliminan las variables originales).
+
+* 5. La variable Education pasa a tener solo dos categorías: no licenciado y licenciado.
+
+
+```{r vv, fig.width=6, fig.height=4, out.width='600px'}
+
+Clientes$Kids = Clientes_o$Kidhome + Clientes_o$Teenhome
+
+Clientes$TotalMnt = Clientes_o$MntWines + Clientes_o$MntFruits + 
+  Clientes_o$MntMeatProducts + Clientes_o$MntFishProducts + 
+  Clientes_o$MntSweetProducts + Clientes_o$MntGoldProds
+
+Clientes$TotalAcceptedCmp = Clientes_o$AcceptedCmp1 + Clientes_o$AcceptedCmp2 + 
+  Clientes_o$AcceptedCmp3 + Clientes_o$AcceptedCmp4 + Clientes_o$AcceptedCmp5 + 
+  Clientes_o$Response
+
+Clientes$NumTotalPurchases = Clientes_o$NumWebPurchases + 
+  Clientes_o$NumStorePurchases 
+
+# Cambiamos la variable de estudios: postgraduados y pregraduados.
+
+Clientes$Education <- as.character(Clientes$Education)
+Clientes$Education[Clientes_o$Education == "PhD" | 
+    Clientes_o$Education == "2n Cycle" | Clientes_o$Education == 'Graduation' | 
+    Clientes_o$Education == "Master"] <- "PostGrad"
+
+Clientes$Education[Clientes_o$Education == "Basic"] <- "UnderGrad" 
+
+del_these <- c("AcceptedCmp1" , "AcceptedCmp2", "AcceptedCmp3" ,"AcceptedCmp4",
+               "AcceptedCmp5","Response","NumWebPurchases",
+               "NumCatalogPurchases","NumStorePurchases", "Kidhome", "Teenhome")
+Clientes[del_these] = NULL
+
+
+plot_histogram(Clientes[c("Kids","TotalMnt","TotalAcceptedCmp",
+                          "NumTotalPurchases")])
+
+
+                           
+```
+Discretización de las variables de nueva creación:
+
+```{r ww}
+
+
+
+Clientes[["Kids"]] = ordered(cut(Clientes[["Kids"]], c(-Inf,0,2,Inf), 
+                                 labels = c("0", "1-2", "3"),right=T))
+
+Clientes[["TotalMnt"]] = ordered(cut(Clientes[["TotalMnt"]], 
+                        c(-Inf,270,1600,Inf), labels = c("Inactive","Active",
+                                                      "HighlyActive"),right=T))
+
+Clientes[["NumTotalPurchases"]] = ordered(cut(Clientes[["NumTotalPurchases"]], 
+                  c(-Inf,7,14,Inf), labels = c("Few", "Medium","Many"),right=T))
+
+Clientes[["TotalAcceptedCmp"]] = ordered(cut(Clientes[["TotalAcceptedCmp"]], 
+                          c(-Inf,0,Inf), labels = c("None", "Any"),right=T))
+
+# Para la representación, por alguna razón, 
+# necesito pasar las variables a caracteres.
+Clientes$Education <- as.character(Clientes$Education)
+Clientes$Kids <- as.character(Clientes$Kids)
+Clientes$TotalMnt <- as.character(Clientes$TotalMnt)
+Clientes$NumTotalPurchases <- as.character(Clientes$NumTotalPurchases)
+Clientes$TotalAcceptedCmp <- as.character(Clientes$TotalAcceptedCmp)
+
+                           
+```
+
+```{r xx, fig.width=6, fig.height=4, out.width='600px'}
+
+Clientes %>% dplyr::select(one_of(c("Kids","TotalMnt","Education","NumTotalPurchases",
+                             "TotalAcceptedCmp"))) %>% 
+  pivot_longer(everything(),names_to="cols",values_to="value")%>%
+  ggplot(aes(x = value)) +
+  geom_bar(fill="#69b3a2", width=0.4)+
+  geom_text(stat='count', aes(label=..count..), vjust=1, cex=3)+
+  facet_wrap(~ cols, ncol=3, scales = 'free', ) + 
+  labs(title="Distribución de las variables", x="valor", 
+       y="Nº de observaciones")
+                           
+```
+
+
+A continuación, se introducen **items negativos**. En este caso, se utiliza la variable income para crear 4 variables binarias (una por cada posible valor de income).
+
+
+```{r yy}
+Clientes$Income_VeryLow <- ifelse(Clientes$Income == 'Very_low',"TRUE","FALSE")
+Clientes$Income_Low <- ifelse(Clientes$Income == 'Low', "TRUE", "FALSE")
+Clientes$Income_Medium <- ifelse(Clientes$Income == 'Medium', "TRUE", "FALSE")
+Clientes$Income_High <- ifelse(Clientes$Income == 'High', "TRUE", "FALSE")
+
+Clientes[["Income"]] = NULL
+                   
+```
+
+
+```{r zz}
+Clientes <- as.data.frame(unclass(Clientes),stringsAsFactors=TRUE)
+
+head(Clientes)
+
+```
+
+
+## 4.2. Obtención de información de la base de datos.
+
+```{r aaa}
+ClientesBD2 <- as(Clientes, "transactions")
+ClientesBD2
+summary(ClientesBD2)
+```
+
+Items frecuentes (mínimo soporte = 0.35): 
+
+```{r bbb, fig.width=6, fig.height=5, out.width='600px'}
+itemFrequencyPlot(ClientesBD2, support = 0.35, cex.names=0.8)
+
+```
+Ya no existen los items tan frecuentes relativos al rechazo de la ofertas de cada campaña. Sin embargo, aparece un nuevo item muy frecuente: "Education=PostGrad". 
+
+"Complain=No" sigue apareciendo también con la misma frecuencia que antes (muy alta),
+
+
+Itemsets frecuentes: 
+
+```{r ccc}
+
+iClientes <- sort(apriori(ClientesBD2, parameter = list(support = 0.35, 
+              target="frequent")), by="support") 
+inspect(head(iClientes, n=10))
+```
+
+Número de itemsets frecuentes para cada tamaño de itemset.
+```{r ddd, fig.width=4, fig.height=4, out.width='500px'}
+
+as.data.frame(size(iClientes)) %>% ggplot(aes(x=size(iClientes)))+
+  geom_bar(fill="#69b3a2", width=0.4)+
+  geom_text(stat='count', aes(label=..count..), vjust=1, cex=3)+
+  labs(x="Itemset size",y="Number of frequent itemsets")
+  
+```
+
+Itemsets frecuentes de mayor tamaño (6; antes era 8):
+
+```{r eee}
+
+inspect(iClientes[size(iClientes)==6])
+```
+
+Itemsets maximales:
+
+```{r fff}
+imaxClientes <- iClientes[is.maximal(iClientes)]
+#length(imaxClientes)
+inspect(head(sort(imaxClientes, by="support")))
+
+#inspect(head(sort(imaxClientes, by="support",decreasing=F)))
+
+```
+
+Itemsets cerrados:
+```{r ggg}
+
+icloClientes <- iClientes[is.closed(iClientes)]
+#length(icloClientes)
+inspect(head(sort(icloClientes, by="support")))
+
+
+```
+Número de itemsets de cada tipo:
+```{r hhh, fig.width=4, fig.height=3, out.width='500px'}
+
+# barplot( c(frequent=length(iClientes), closed=length(icloClientes),
+# maximal=length(imaxClientes)), ylab="count", xlab="itemsets")
+
+df <- data.frame(trt = c("Frequent", "Closed", "Maximal"), outcome = 
+              c(length(iClientes), length(icloClientes), length(imaxClientes)))
+
+ggplot(df, aes(trt, outcome)) +
+  geom_col(fill="#69b3a2", width=0.4)+
+  geom_text(stat = "identity", aes(label=`outcome`), vjust=1, cex=3)+
+  labs(x="Itemset type",y="Count")
+```
+El número de itemsets frecuentes ha disminuido de 1667 a 391; el número de cerrados de 1332 a 355 y el de maximales ha aumentado ligeramente.
+
+## 4.3. Extracción de reglas (apriori).
+
+```{r iii, width=6, fig.height=4, out.width='600px'}
+
+rules <- apriori(ClientesBD2, parameter = list(support = 0.1, confidence= 0.8,
+                                               minlen = 2))
+rules_lift <- subset(rules, subset = lift > 1.2)
+
+rulesSorted = sort(rules_lift, by = "confidence")
+redundant <- is.redundant(x = rulesSorted, measure = "confidence")
+rulesPruned <- rulesSorted[!redundant] # remove redundant rules
+plot(rulesPruned)
+```
+
+Se han obtenido 24084 reglas (tras eliminar las redundantes).
+
+Se aplica algún filtro más (soporte menor de 0.5).
+
+
+```{r jjj}
+
+rules_filtered <- subset(rulesPruned, subset = lift > 1.2 & confidence>0.8 &
+                           support >0.1 & support<0.5)
+length(rulesPruned)
+length(rules_filtered)
+
+#plot(rules_filtered,jitter=0)
+
+```
+
+A continuación se observan algunas, las que más confianza tienen:
+
+```{r kkk}
+rules_filtered = sort(rules_filtered, by = "confidence")
+inspect(head(rules_filtered,20))
+```
+
+
+Se eliminan las reglas que contienen, en el antecedente un item TRUE relativo a cualquiera de las cuatro variables de Income acompañado de uno o varios items FALSE (relativos a Income también), por ser redundantes. Se eliminan, además, las reglas que contienen cualquier item relativo a income en antecedente y consecuente, por ser poco interesantes. 
+
+```{r lll}
+binars <- c("Income_VeryLow=TRUE","Income_VeryLow=FALSE","Income_Medium=TRUE",
+            "Income_Medium=FALSE","Income_Low=TRUE","Income_Low=FALSE",
+            "Income_High=TRUE","Income_High=FALSE")
+
+binarsT <- c("Income_VeryLow=TRUE","Income_Medium=TRUE","Income_Low=TRUE",
+             "Income_High=TRUE")
+
+binarsF <- c("Income_VeryLow=FALSE","Income_Medium=FALSE","Income_Low=FALSE",
+             "Income_High=FALSE")
+
+delete <- subset(rules_filtered, subset =  (lhs %in% binarsT & lhs %in% binarsF)
+                 | (lhs %in% binars & rhs %in% binars))
+
+#inspect(head(delete,5))
+#length(delete)
+
+filt <- rules_filtered %!in% delete
+filt2 <- ifelse(is.na(filt), TRUE, FALSE)
+rules_opt <- rules_filtered[filt2]
+
+length(rules_filtered) == (length(rules_opt)+length(delete))
+```
+
+Se observan algunas de las reglas que quedan tras aplicar este último filtro:
+
+```{r mmm}
+inspect(head(rules_opt,5))
+#plot(rules_opt,jitter=0)
+```
+
+Se buscan reglas con un poco menos de confianza:
+
+```{r ññña}
+rules_mod <- subset(rules_opt, subset =  confidence <0.95 )
+inspect(head(rules_mod,10))
+```
+
+Se buscan reglas con el item "Kids=1-2" en el consecuente:
+
+```{r ñññ}
+rules_mod <- subset(rules_opt, subset =  confidence <0.95 & rhs %in% "Kids=1-2" )
+inspect(head(rules_mod,10))
+```
+Regla número 10: casi el 95% de los clientes que hicieron entre 3 y 15 compras con descuentos en los dos últimos años y que tienen un ingreso medio, tienen 1 o 2 niños/adolescentes en casa. Más del 10% de los clientes de la base de datos cumple estas 3 características a la vez. Se guarda esta regla como interesante, por describir un subgrupo de clientes activos de la empresa (los que no son ricos, tienen niños y usan descuentos).
+
+```{r sssa}
+R_INTERESANTES <- rbind(R_INTERESANTES,as(rules_mod[10],"data.frame"))
+R_INTERESANTES
+
+```
+
+A continuación se buscan reglas que describan el prototipo de cliente que no utiliza descuentos:
+
+```{r rrr}
+rules_mod <- subset(rules_opt, subset =  rhs %in% "NumDealsPurchases=0-1" )
+inspect(head(rules_mod,5))
+```
+
+Segunda regla: casi el 99% de los clientes que compran mucha fruta, mucha carne, visitaron poco la web en último mes, tienen 0 hijos/adolescentes en casa y un alto sueldo, realizaron entre 0 y 1 compra con descuento en los dos últimos años. Además, más del 10% de los clientes de la base de datos cumple todas estas características a la vez. Se guarda esta regla como interesante, por describir el subgrupo más activo dentro de los clientes activos (son ricos, no tienen niños en casa, no usan descuentos ni la web en el último mes).                                    
+
+```{r sss}
+R_INTERESANTES <- rbind(R_INTERESANTES,as(rules_mod[2],"data.frame"))
+R_INTERESANTES
+
+```
+
+
+
+A continuación, se buscan reglas que incluyan en el antecedente algún item no demasiado frecuente:
+
+```{r ooo}
+not_freq <- c("TotalAcceptedCmp=Any","Marital_Status=Single",
+              "Education=UnderGrad","Complain=Yes","Year_Birth=Young",
+              "NumDealsPurchases=3-15")
+rules_mod <- subset(rules_opt, subset =  lhs %in% not_freq & confidence < 0.9)
+inspect(head(rules_mod,20))
+```
+
+Regla número 11: casi el 89% de los que han visitado muy poco la web en el último mes y han aceptado alguna de las campañas ha realizado 0 o 1 compras con descuento en los últimos dos años. 
+
+Regla número 14: más del 88% de los que han aceptado la oferta de alguna camapaña y que tienen ingreso alto, invierten una gran cantidad en vino. Sería interesante descubrir si este tipo de regla existe con otros productos que no sean vino, se hará más adelante.
+
+Se guardan ambas reglas como interesantes.
+
+```{r ppp}
+
+R_INTERESANTES <- rbind(R_INTERESANTES,as(rules_mod[11],"data.frame"))
+R_INTERESANTES <- rbind(R_INTERESANTES,as(rules_mod[14],"data.frame"))
+R_INTERESANTES
+
+```
+
+No se han escrito reglas que describan el tipo de clientes que han utilizado (con una probabilidad de por lo menos 0.8) algún descuento en los últimos dos años. Quizás si se hubieran juntado los items "NumDealsPurchases=2-2" y "NumDealsPurchases=3-15" en uno, sí se hubieran obtenido este tipo de reglas (por lo que sabemos del dataset por el momento, en el antecedente aparecería una combinación de items como "Kids=1-2", "TotalMnt=Active", "Income_High=FALSE", etc.).
+
+```{r qqq}
+rules_mod <- subset(rules_opt, subset =  rhs %in% c("NumDealsPurchases=2-2",
+                                                    "NumDealsPurchases=3-15"))
+inspect(head(rules_mod,20))
+```
+
+
+Se ha comprobado que clientes activos, con grandes inversiones en varios productos, sin hijos y con un ingreso alto tienden a no usar descuentos. A continuación, se muestran los clientes del dataset que a pesar de cumplir todas estas características, sí usan los descuentos:
+
+```{r ttt2}
+subset(Clientes, TotalMnt=="HighlyActive" &  
+         Income_High=="TRUE" &
+      NumDealsPurchases=="3-15"  )
+```
+Son solo 10, pero llama la atención que todos ellos gastan grandes cantidades en los productos de carne, y casi todos en vino también, mientras que para el resto de productos hay varios clientes cuya inversión no es alta. Quizás los descuentos que usan este tipo de clientes (adinerados) son descuentos aplicados sobre esos productos. 
+
+Se observa también que la mayoría tienen niños. Aunque ya se había observado previamente que los que más descuentos usan, tienden a tener hijos, también se había observado la relación entre ser un cliente muy adinerado y activo y no tener niños en casa (este grupo de clientes son una excepcion a esta relación).
+
+Se observa, además, que el número total de compras en la mayoría de estos clientes no es alto: clientes activos pueden invertir grandes cantidades de dinero en un bajo número de compras.
+
+
+A continuación, se buscan aquellos clientes que, a pesar de tener bajo ingreso, son clientes activos de la empresa (en base a la cantidad de dinero total invertida en los dos últimos años).
+
+```{r uuu}
+subset(Clientes,(TotalMnt=="Active"|TotalMnt=="HighlyActive")  &  
+         (Income_VeryLow=="TRUE"))                                                                              
+ 
+```
+Casi todos ellos son clientes "Active" (solo uno es "HighlyActive"). De la interacción de estos clientes con la empresa se puede decir que visitan mucho la web y tienden a hacer gran uso de los descuentos. 
+
+A continuación, se buscan aquellos clientes que, a pesar de tener un alto ingreso, son clientes inactivos de la empresa:
+
+```{r vvv}
+
+subset(Clientes,TotalMnt=="Inactive" & Income_High=="TRUE")
+```
+Lo único a destacar: todos tienen una inversión baja en oro. El único que ha visitado la web en el último mes (además varias veces) ha utilizado varios descuentos en los dos últimos años. 
+
+
+Previamente se comprobó la relación entre invertir mucho dinero en un tipo de producto y hacerlo en el resto de productos también. Sin embargo, a continuación se buscan reglas que tengan en el consecuente un item que indique una gran inversión en algún tipo de producto de la empresa y que no tengan en el antecedente items que indiquen una gran inversión en otro/s tipo/s de productos. Se realiza esta búsqueda por si salieran reglas que definan características específicas de clientes que compran un producto específico (del tipo "los que se quejan compran mucho vino"). Además, se utiliza esta búsqueda para comprobar si existen reglas que relacionen la aceptación de ofertas de campaña con una alta inversión en algún producto que no sea el vino.
+
+**Vino**
+
+```{r www}
+
+rules_mod_vino <- subset(rules_opt, subset = rhs %oin%  "MntWines=High" &  
+                  lhs %!ain% c("Income_Low=FALSE","Income_VeryLow=FALSE") & 
+                  lhs %!in% c(high,"NumTotalPurchases=Medium"))
+inspect(head(rules_mod_vino,5))
+```
+ *La primera de estas reglas es la que se guardó previamente*.
+ 
+**Fruta**
+```{r xxx}
+
+rules_mod <- subset(rules_opt, subset = rhs %in%  "MntFruits=High" &  
+                      lhs %!ain% c("Income_Low=FALSE","Income_VeryLow=FALSE") & 
+                      lhs %!in% c(high,"NumTotalPurchases=Medium"))
+inspect(head(rules_mod,5))
+```
+
+**Carne**      
+```{r yyy}
+
+rules_mod <- subset(rules_opt, subset = rhs %in%  "MntMeatProducts=High" & 
+                      lhs %!ain% c("Income_Low=FALSE","Income_VeryLow=FALSE") & 
+                      lhs %!in% c(high,"NumTotalPurchases=Medium"))
+inspect(head(rules_mod,5))
+```
+
+**Pescado**
+
+```{r zzz}
+
+rules_mod <- subset(rules_opt, subset = rhs %in%  "MntFishProducts=High" &  
+                      lhs %!ain% c("Income_Low=FALSE","Income_VeryLow=FALSE") & 
+                      lhs %!in% c(high,"NumTotalPurchases=Medium"))
+inspect(head(rules_mod,5))
+``` 
+
+**Dulces**
+```{r aaaa}
+
+rules_mod <- subset(rules_opt, subset = rhs %in%  "MntSweetProducts=High" &  
+                      lhs %!ain% c("Income_Low=FALSE","Income_VeryLow=FALSE") & 
+                      lhs %!in% c(high,"NumTotalPurchases=Medium"))
+inspect(head(rules_mod,5))
+``` 
+
+**Oro**
+```{r bbbb}
+
+rules_mod <- subset(rules_opt, subset = rhs %in%  "MntGoldProds=High" &  lhs %!ain% c(                        "Income_Low=FALSE","Income_VeryLow=FALSE") & lhs %!in% c(high,"NumTotalPurchases=Medium"))
+inspect(head(rules_mod,5))
+``` 
+
+
+En general no se observan reglas que ofrezcan información nueva: en el antecedente suelen aparecer los mismos items que se relacionan con los clientes más activos (Kids=0, Income=High, NumDealsPurchases=0-1, NumWebVisitsMonth=0-4, ...). Sin embargo, llaman la atención dos cosas:
+
+* 1. Solo en el caso de la gran inversión en oro no aparecen reglas (aplicando los mismos filtros que con los otros productos).
+
+* 2. Solo en el caso de la gran inversión en vino aparece en el antecedente de las reglas el item "TotalAcceptedCmp=Any". Se comprueba que no se han escrito reglas con "TotalAcceptedCmp=Any" en el antecedente -puede ir acompañado de otros items, menos los que se han descartado también en el resto de casos- y en el consecuente un item de gran inversión en uno de los productos que no sea vino.
+
+```{r cccc}
+high_nowine <- c("MntFruits=High","MntGoldProds=High","MntSweetProducts=High",
+                 "MntFishProducts=High","MntMeatProducts=High")
+
+rules_mod <- subset(rules_opt, subset = rhs %in%  high_nowine & length(rhs)==1 &
+lhs %!ain% c("Income_Low=FALSE","Income_VeryLow=FALSE") & lhs %!in%     
+  c(high,"NumTotalPurchases=Medium") & lhs %in% "TotalAcceptedCmp=Any")
+
+inspect(head(rules_mod,5))
+``` 
+
+Esto podría estar indicando que las campañas están funcionando para incrementar la compra de vino. Ya se guardó previamente una de las reglas que dan este tipo de información.
+
+Se divide el conjunto de reglas interesantes en dos, en base al dataset sobre el que se han extraído.
+
+```{r home eeee}
+
+R_INT_1 <- R_INTERESANTES[1:5,]
+R_INT_2 <- R_INTERESANTES[6:9,]
+
+```
+```{r home ffff}
+
+cat("Reglas interesantes del dataset con las modificaciones estrictamente necesarias:")
+R_INT_1
+
+```
+
+```{r home gggg}
+
+cat("Reglas interesantes del dataset con las modificaciones adicionales:")
+R_INT_2
+```
+
+# 5. Conclusiones:
+
+*- El ingreso es un factor muy importante a la hora de determinar la cantidad de dinero invertida por el cliente en la empresa, en cualquier tipo de producto. 
+
+- Sin embargo, encontramos dos prototipos diferentes de cliente activo: aquel que tiene un ingreso alto, no tiene niños y no usa descuentos (son los que más invierten) frente a aquel que tiene un ingreso medio, tiene niños y usa descuentos.
+
+- Los clientes que invierten mucho en cualquier tipo de producto tienden a hacerlo también en los productos de pescado, fruta, dulces o carne, mientras que no se observa la misma relación con los productos de oro y vino.
+
+- Los clientes más activos visitaron poco o nada la web en el último mes y tienden a comprar en tienda, utilizando el catálogo.
+
+- Dentro de los clientes más adinerados, los que aceptaron alguna campaña tienden a invertir mucho en vino (mientras que no se ha encontrado esta regla para otros tipos específicos de productos).
+
+- Las dos últimas reglas guardadas indican que las ofertas de las campañas parecen ser aceptadas mayoritariamente por clientes especialmente activos (aunque en general no tienen mucho éxito).
